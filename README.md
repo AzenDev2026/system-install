@@ -18,7 +18,7 @@ NV_FS_TYPE  (system files type, btrfs/ext4)
 NV_HOSTNAME  
 NV_YES
 ```
-written in 2026 oct 22
+written in 2026 oct 22  
 main repository click [here](https://github.com/AzenDev2026/AzenDev)  
 personal email zitingliang18@gmail.com  
 official website [here](https://azen.dev)  
