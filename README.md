@@ -20,5 +20,5 @@ NV_YES
 ```
 written in 2026 oct 22
 main repository click [here](https://github.com/AzenDev2026/AzenDev)  
-personal email [here](zitingliang18@gmail.com)  
+personal email zitingliang18@gmail.com  
 official website [here](https://azen.dev)  
