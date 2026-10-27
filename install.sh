@@ -6,16 +6,17 @@ umask 022
 # ============================================================
 #  NVazen 安装器 - 核心逻辑
 #  环境变量:
-#    NV_TARGET_DISK  目标磁盘
-#    NV_HOSTNAME     主机名
-#    NV_USERNAME     用户名
-#    NV_USER_PASS    用户密码
-#    NV_ROOT_PASS    root 密码
-#    NV_FS_TYPE      文件系统 (ext4 / btrfs)
-#    NV_TIMEZONE     时区
-#    NV_LOCALE       语言
-#    NV_KEYMAP       键盘布局
-#    NV_YES          自动确认 (1=跳过确认)
+#    NV_TARGET_DISK     目标磁盘
+#    NV_HOSTNAME        主机名
+#    NV_USERNAME        用户名
+#    NV_USER_PASS       用户密码
+#    NV_ROOT_PASS       root 密码
+#    NV_FS_TYPE         文件系统 (ext4 / btrfs)
+#    NV_RESOURCE_TYPE   资源类型 (standard / pro)
+#    NV_TIMEZONE        时区
+#    NV_LOCALE          语言
+#    NV_KEYMAP          键盘布局
+#    NV_YES             自动确认 (1=跳过确认)
 # ============================================================
 
 TARGET_DISK="${NV_TARGET_DISK:-}"
@@ -24,10 +25,13 @@ USERNAME="${NV_USERNAME:-nvazen}"
 USER_PASS="${NV_USER_PASS:-}"
 ROOT_PASS="${NV_ROOT_PASS:-$USER_PASS}"
 FS_TYPE="${NV_FS_TYPE:-ext4}"
+RESOURCE_TYPE="${NV_RESOURCE_TYPE:-standard}"
 TIMEZONE="${NV_TIMEZONE:-UTC}"
 LOCALE="${NV_LOCALE:-en_US.UTF-8}"
 KEYMAP="${NV_KEYMAP:-us}"
 RESOURCE_REPO="https://github.com/AzenDev2026/Azen_sys.resource/archive/refs/heads/main.tar.gz"
+PRO_REPO_TAR="https://github.com/AzenDev2026/nvpro-rec/archive/refs/heads/main.tar.gz"
+PRO_RELEASE_ZIP="https://github.com/AzenDev2026/nvpro-rec/releases/download/rec/plasma-config-backup.zip"
 LOG_FILE="/tmp/nvazen-install.log"
 
 log()  { echo -e "\e[1;34m[NVazen]\e[0m $*" | tee -a "$LOG_FILE"; }
@@ -42,9 +46,11 @@ exec > >(tee -a "$LOG_FILE") 2>&1
 [[ -b "$TARGET_DISK" ]] || die "目标磁盘不存在：$TARGET_DISK"
 [[ -n "$USER_PASS" ]] || die "未设置用户密码。"
 [[ "$FS_TYPE" == "ext4" || "$FS_TYPE" == "btrfs" ]] || die "不支持的文件系统：$FS_TYPE (仅 ext4/btrfs)"
+[[ "$RESOURCE_TYPE" == "standard" || "$RESOURCE_TYPE" == "pro" ]] || die "不支持的资源类型：$RESOURCE_TYPE (仅 standard/pro)"
 
 log "目标磁盘：$TARGET_DISK"
 log "文件系统：$FS_TYPE"
+log "资源类型：$RESOURCE_TYPE"
 log "主机名：$HOSTNAME"
 log "用户名：$USERNAME"
 lsblk "$TARGET_DISK"
@@ -68,7 +74,6 @@ sgdisk --zap-all "$TARGET_DISK" 2>/dev/null || true
 partprobe "$TARGET_DISK" 2>/dev/null || true
 sleep 2
 
-# 分区前缀
 PART_PREFIX="$TARGET_DISK"
 case "$TARGET_DISK" in
   *nvme*|*mmcblk*|*loop*) PART_PREFIX="${TARGET_DISK}p" ;;
@@ -76,7 +81,6 @@ esac
 
 EFI_PART="${PART_PREFIX}1"
 
-# EFI + SWAP + ROOT
 sgdisk -n 1:0:+512M -t 1:ef00 -c 1:"EFI" "$TARGET_DISK"
 sgdisk -n 2:0:+4G   -t 2:8200 -c 2:"SWAP" "$TARGET_DISK"
 sgdisk -n 3:0:0     -t 3:8300 -c 3:"ROOT" "$TARGET_DISK"
@@ -145,7 +149,6 @@ Server = https://mirrors.ustc.edu.cn/archlinux/\$repo/os/\$arch
 Server = https://mirrors.tuna.tsinghua.edu.cn/archlinux/\$repo/os/\$arch
 EOF
 
-# 并行下载
 grep -q '^ParallelDownloads' /etc/pacman.conf && \
   sed -i 's/^ParallelDownloads.*/ParallelDownloads = 10/' /etc/pacman.conf || \
   sed -i '/^\[options\]/a ParallelDownloads = 10' /etc/pacman.conf
@@ -167,15 +170,76 @@ log "生成 fstab..."
 genfstab -U /mnt >> /mnt/etc/fstab
 
 # --- 资源下载 ---
-log "下载 NVazen 资源..."
+log "下载 NVazen 资源 (类型: $RESOURCE_TYPE)..."
 TMP=$(mktemp -d)
-curl -L --retry 3 --max-time 180 "$RESOURCE_REPO" -o "$TMP/res.tar.gz" || die "资源下载失败"
-tar -xzf "$TMP/res.tar.gz" -C "$TMP"
-RD=$(find "$TMP" -maxdepth 1 -type d -name 'Azen_sys.resource-*' | head -1)
-[[ -n "$RD" ]] || die "资源目录未找到"
 
-[ -d "$RD/etc" ] && cp -a "$RD/etc/." /mnt/etc/
-[ -d "$RD/usr" ] && cp -a "$RD/usr/." /mnt/usr/
+# 图标分发辅助函数
+distribute_icon() {
+  local src="$1"
+  local user_pixmaps="/mnt/home/${USERNAME}/.local/share/pixmaps"
+  local user_icons="/mnt/home/${USERNAME}/.local/share/icons"
+  mkdir -p /mnt/usr/share/pixmaps /mnt/usr/share/icons "$user_pixmaps" "$user_icons"
+  cp -a "$src" /mnt/usr/share/pixmaps/ 2>/dev/null || true
+  cp -a "$src" /mnt/usr/share/icons/ 2>/dev/null || true
+  cp -a "$src" "$user_pixmaps/" 2>/dev/null || true
+  cp -a "$src" "$user_icons/" 2>/dev/null || true
+}
+
+if [[ "$RESOURCE_TYPE" == "pro" ]]; then
+  # 第一步：仓库根目录文件
+  log "  下载 nvpro-rec 仓库根目录..."
+  curl -L --retry 3 --max-time 180 "$PRO_REPO_TAR" -o "$TMP/pro-raw.tar.gz" || die "Pro 仓库根目录下载失败"
+  tar -xzf "$TMP/pro-raw.tar.gz" -C "$TMP"
+  PRO_DIR=$(find "$TMP" -maxdepth 1 -type d -name 'nvpro-rec-*' | head -1)
+  [[ -n "$PRO_DIR" ]] || die "Pro 仓库目录未找到"
+
+  while IFS= read -r -d '' f; do
+    base=$(basename "$f")
+    ext="${base##*.}"
+    case "$ext" in
+      png|svg|ico|xpm) distribute_icon "$f" ;;
+      os-release)      cp -a "$f" /mnt/etc/os-release ;;
+      *)               cp -a "$f" /mnt/etc/ 2>/dev/null || true ;;
+    esac
+  done < <(find "$PRO_DIR" -maxdepth 1 -type f -print0)
+
+  # 第二步：Release zip (plasma-config-backup.zip)
+  log "  下载 Pro 系列 release (plasma-config-backup.zip)..."
+  if curl -L --retry 3 --max-time 300 "$PRO_RELEASE_ZIP" -o "$TMP/pro-release.zip"; then
+    unzip -q "$TMP/pro-release.zip" -d "$TMP/pro-release" || warn "zip 解压失败"
+    # 处理可能的顶层目录
+    RELEASE_ROOT="$TMP/pro-release"
+    TOP_ENTRIES=$(find "$RELEASE_ROOT" -maxdepth 1 -mindepth 1 | wc -l)
+    if [[ "$TOP_ENTRIES" == "1" && -d "$(find "$RELEASE_ROOT" -maxdepth 1 -mindepth 1 | head -1)" ]]; then
+      RELEASE_ROOT=$(find "$RELEASE_ROOT" -maxdepth 1 -mindepth 1 | head -1)
+    fi
+
+    while IFS= read -r -d '' f; do
+      rel="${f#$RELEASE_ROOT/}"
+      ext="${f##*.}"
+      case "$ext" in
+        png|svg|ico|xpm) distribute_icon "$f" ;;
+        *)
+          mkdir -p "/mnt/$(dirname "$rel")"
+          cp -a "$f" "/mnt/$rel" 2>/dev/null || true
+          ;;
+      esac
+    done < <(find "$RELEASE_ROOT" -type f -print0)
+  else
+    warn "Pro release 下载失败，仅使用根目录文件"
+  fi
+else
+  # 标准资源
+  log "  下载 Azen_sys.resource..."
+  curl -L --retry 3 --max-time 180 "$RESOURCE_REPO" -o "$TMP/res.tar.gz" || die "资源下载失败"
+  tar -xzf "$TMP/res.tar.gz" -C "$TMP"
+  RD=$(find "$TMP" -maxdepth 1 -type d -name 'Azen_sys.resource-*' | head -1)
+  [[ -n "$RD" ]] || die "资源目录未找到"
+  [ -d "$RD/etc" ] && cp -a "$RD/etc/." /mnt/etc/
+  [ -d "$RD/usr" ] && cp -a "$RD/usr/." /mnt/usr/
+fi
+
+rm -rf "$TMP"
 
 # --- chroot 配置 ---
 log "配置系统..."
@@ -209,13 +273,11 @@ systemd-machine-id-setup
 systemctl enable NetworkManager
 systemctl enable sddm
 
-# SDDM Qt6 greeter
 if [ -x /usr/bin/sddm-greeter-qt6 ] && [ ! -L /usr/bin/sddm-greeter ]; then
   mv /usr/bin/sddm-greeter /usr/bin/sddm-greeter-qt5.bak 2>/dev/null || true
   ln -sf /usr/bin/sddm-greeter-qt6 /usr/bin/sddm-greeter
 fi
 
-# btrfs hook
 if [[ "$FS_TYPE" == "btrfs" ]]; then
   sed -i 's/^HOOKS=.*/HOOKS=(base udev autodetect modconf block filesystems keyboard fsck)/' /etc/mkinitcpio.conf
 fi
